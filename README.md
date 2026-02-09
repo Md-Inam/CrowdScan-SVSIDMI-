@@ -369,12 +369,6 @@ This system is intended for legitimate missing person searches and authorized se
 
 The developers assume no liability for misuse or unauthorized use of this system.
 
-## 📞 Support
-
-- **Issues**: [GitHub Issues](https://github.com/yourusername/missing-person-detection/issues)
-- **Discussions**: [GitHub Discussions](https://github.com/yourusername/missing-person-detection/discussions)
-- **Email**: support@yourproject.com
-
 ## 🙏 Acknowledgments
 
 - **FaceNet**: Google Research
@@ -383,7 +377,7 @@ The developers assume no liability for misuse or unauthorized use of this system
 - **PyTorch**: Deep learning framework
 - **OpenCV**: Computer vision library
 
-## 🗺️ Roadmap
+## 🗺️ Roadmap(Expected Future Improvements)
 
 - [ ] Real-time webcam/RTSP stream support
 - [ ] Cloud storage integration (AWS S3, Google Cloud)
