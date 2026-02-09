@@ -30,7 +30,7 @@ except Exception as e:
 # PAGE CONFIGURATION
 # ============================================================================
 st.set_page_config(
-    page_title="Enterprise Missing Person Detection",
+    page_title="Crowd Scan: Smart Vision System for Identifying and detecting Missing Individuals",
     page_icon="🔍",
     layout="wide",
     initial_sidebar_state="expanded"
