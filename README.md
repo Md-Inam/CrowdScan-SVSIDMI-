@@ -39,8 +39,7 @@ Ultra-fast batch video processing system for detecting missing persons using adv
 
 1. **Clone the repository**
 ```bash
-git clone https://github.com/yourusername/missing-person-detection.git
-cd missing-person-detection
+git clone https://github.com/Md-Inam/CrowdScan-SVSIDMI-
 ```
 
 2. **Create virtual environment**
@@ -94,7 +93,7 @@ railway up
 ### Deploy to Vercel
 
 **Note**: Vercel is optimized for serverless functions and may not be ideal for this compute-intensive application. Railway or dedicated server recommended.
-
+          Railway Free Tier Docker image size is limited to 4GB 
 If you still want to try Vercel:
 
 1. Install Vercel CLI:
@@ -119,7 +118,7 @@ sudo apt install python3-pip python3-venv
 
 3. **Clone and setup**:
 ```bash
-git clone https://github.com/yourusername/missing-person-detection.git
+git clone 
 cd missing-person-detection
 python3 -m venv venv
 source venv/bin/activate
