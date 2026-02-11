@@ -1,4 +1,5 @@
-# 🔍 Crowd Scan: Smart Vision System for Identifying and Detecting    Missing Individuals
+# 🔍 Crowd Scan: Smart Vision System for Identifying and Detecting    
+   Missing Individuals
 
 Ultra-fast batch video processing system for detecting missing persons using advanced facial recognition technology.
 
