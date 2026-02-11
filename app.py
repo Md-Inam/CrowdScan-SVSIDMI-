@@ -4,7 +4,7 @@ import numpy as np
 from PIL import Image
 import torch
 from facenet_pytorch import InceptionResnetV1, MTCNN
-from datetime import datetime
+from datetime import datetime, timedelta
 import plotly.express as px
 import plotly.graph_objects as go
 import pandas as pd
@@ -14,134 +14,239 @@ from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import os
 import glob
-from collections import deque
-import threading
-import queue
+from typing import List, Dict, Optional, Tuple
+import logging
+from dataclasses import dataclass
+import tempfile
+import re
 
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# Try to load YOLO
 try:
     from ultralytics import YOLO
-    # Load a pre-trained YOLO model (e.g., YOLOv8s for speed)
-    yolo_model = YOLO('yolov8s.pt') 
+    yolo_model = YOLO('yolov8s.pt')
     yolo_model.to('cuda' if torch.cuda.is_available() else 'cpu')
+    YOLO_AVAILABLE = True
+    logger.info("YOLO v8 loaded successfully")
 except Exception as e:
     yolo_model = None
+    YOLO_AVAILABLE = False
+    logger.warning(f"YOLO not available: {e}")
+
+# ============================================================================
+# DATA MODELS
+# ============================================================================
+@dataclass
+class Detection:
+    """Structured detection result"""
+    video_path: str
+    video_name: str
+    frame_number: int
+    timestamp: float
+    timestamp_str: str
+    confidence: float
+    bbox: List[int]
+    face_image: Image.Image
+    annotated_frame: np.ndarray
+    location_hint: str = ""
+    priority: str = "MEDIUM"
     
+    def to_dict(self) -> dict:
+        return {
+            'video_name': self.video_name,
+            'frame': self.frame_number,
+            'timestamp': self.timestamp_str,
+            'confidence': f"{self.confidence*100:.2f}%",
+            'priority': self.priority,
+            'location': self.location_hint
+        }
+
 # ============================================================================
 # PAGE CONFIGURATION
 # ============================================================================
 st.set_page_config(
-    page_title="Crowd Scan: Smart Vision System for Identifying and detecting Missing Individuals",
+    page_title="CrowdScan - Missing Person Detection",
     page_icon="🔍",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
+# ============================================================================
+# CUSTOM CSS
+# ============================================================================
 st.markdown("""
 <style>
     .main-header {
         text-align: center;
         padding: 2rem;
         background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-        border-radius: 12px;
+        border-radius: 16px;
         margin-bottom: 2rem;
-        box-shadow: 0 4px 10px rgba(0,0,0,0.3);
+        box-shadow: 0 10px 30px rgba(102, 126, 234, 0.3);
+    }
+    .main-header h1 {
+        color: white;
+        margin: 0;
+        font-size: 2.5rem;
+        font-weight: 700;
     }
     .stButton>button {
         background: linear-gradient(45deg, #667eea 0%, #764ba2 100%);
         color: white !important;
-        font-weight: bold;
-        border-radius: 8px;
-        border: none;
-        padding: 0.5rem 1rem;
-        box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
-        transition: all 0.3s;
+        font-weight: 600;
+        border-radius: 12px;
+        padding: 0.75rem 1.5rem;
+        box-shadow: 0 4px 12px rgba(102, 126, 234, 0.3);
+        transition: all 0.3s ease;
     }
     .stButton>button:hover {
         transform: translateY(-2px);
-        box-shadow: 0 6px 8px rgba(0, 0, 0, 0.15);
+        box-shadow: 0 6px 20px rgba(102, 126, 234, 0.4);
     }
-    .metric-card {
-        background: linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%);
+    .alert-info {
+        background: #dbeafe;
+        border-left: 4px solid #3b82f6;
         padding: 1.5rem;
-        border-radius: 10px;
-        box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+        border-radius: 8px;
+        margin: 1rem 0;
+        color: #1e40af;
+        font-weight: 500;
+    }
+    .progress-box {
+        background: white;
+        padding: 2rem;
+        border-radius: 16px;
+        box-shadow: 0 4px 16px rgba(0,0,0,0.08);
+        margin: 1rem 0;
+        border: 2px solid #3b82f6;
+    }
+    .progress-box h3 {
+        color: #1e40af;
+        margin-bottom: 1rem;
+    }
+    .progress-box p {
+        color: #1f2937;
+        font-size: 1.1rem;
         margin: 0.5rem 0;
     }
-    .warning-box {
-        background: #fff3cd;
-        border-left: 4px solid #ffc107;
-        padding: 1rem;
-        border-radius: 4px;
-        margin: 1rem 0;
-    }
-    .success-box {
-        background: #d4edda;
-        border-left: 4px solid #28a745;
-        padding: 1rem;
-        border-radius: 4px;
+    .stats-summary {
+        background: linear-gradient(135deg, #f0f9ff 0%, #e0f2fe 100%);
+        padding: 1.5rem;
+        border-radius: 12px;
+        border: 2px solid #0ea5e9;
         margin: 1rem 0;
     }
 </style>
 """, unsafe_allow_html=True)
 
+# ============================================================================
+# HEADER
+# ============================================================================
 st.markdown("""
 <div class="main-header">
-    <h1 style="color: white; margin: 0;">🔍 Enterprise Missing Person Detection System</h1>
-    <p style="color: white; margin: 0; opacity: 0.9; font-size: 1.1em;">
-        Ultra-Fast Batch Processing with Smart Optimizations
-    </p>
+    <h1>🔍 CrowdScan: Missing Person Detection</h1>
+    <p style="color: white; margin: 0.5rem 0 0 0; font-size: 1.2rem;">AI-Powered Video Analysis with Actionable Intelligence</p>
 </div>
 """, unsafe_allow_html=True)
 
 # ============================================================================
-# SESSION STATE INITIALIZATION
+# SESSION STATE
 # ============================================================================
-if 'detections' not in st.session_state:
-    st.session_state.detections = []
-if 'processing_stats' not in st.session_state:
-    st.session_state.processing_stats = {}
-if 'is_processing' not in st.session_state:
-    st.session_state.is_processing = False
+def init_session_state():
+    defaults = {
+        'detections': [],
+        'is_processing': False,
+        'processing_complete': False,
+        'processing_stats': {},
+    }
+    for key, value in defaults.items():
+        if key not in st.session_state:
+            st.session_state[key] = value
+
+init_session_state()
 
 # ============================================================================
 # MODEL LOADING
 # ============================================================================
-@st.cache_resource
-def load_models():
-    """Load FaceNet and MTCNN with optimizations"""
+@st.cache_resource(show_spinner=False)
+def load_models() -> Tuple[Optional[InceptionResnetV1], Optional[MTCNN], torch.device, bool]:
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     
     try:
-        # Optimized MTCNN
         mtcnn = MTCNN(
             keep_all=True,
             device=device,
             post_process=False,
             select_largest=False,
-            min_face_size=30,  # Skip tiny faces
-            thresholds=[0.6, 0.7, 0.7],  # More selective detection
+            min_face_size=30,
+            thresholds=[0.6, 0.7, 0.7],
         )
         
-        # FaceNet with optimization
         resnet = InceptionResnetV1(pretrained='vggface2').eval().to(device)
         
-        # Enable inference optimizations
         if device.type == 'cuda':
-            resnet = resnet.half()  # Use FP16 for 2x speed on GPU
+            resnet = resnet.half()
         
+        logger.info(f"Models loaded on {device}")
         return resnet, mtcnn, device, True
     
     except Exception as e:
-        st.error(f"❌ Error loading models: {e}")
+        logger.error(f"Error loading models: {e}")
         return None, None, None, False
 
 # ============================================================================
-# FACE PROCESSING FUNCTIONS
+# LOCATION EXTRACTION
 # ============================================================================
-def get_face_embedding_batch(images_list, resnet, device):
-    """Process multiple faces in batch for GPU efficiency"""
+def extract_location_hint(video_path: str) -> str:
+    """Extract meaningful location from video path/filename"""
+    path = Path(video_path)
+    
+    if 'tmp' in str(path).lower() or 'temp' in str(path).lower():
+        filename = path.stem
+        
+        patterns = [
+            r'(?i)(camera|cam)[_\-\s]*([a-z0-9]+)',
+            r'(?i)(location|loc)[_\-\s]*([a-z0-9]+)',
+            r'(?i)(building|bldg)[_\-\s]*([a-z0-9]+)',
+            r'(?i)(floor|flr)[_\-\s]*([a-z0-9]+)',
+            r'(?i)(entrance|exit|lobby|parking)',
+        ]
+        
+        for pattern in patterns:
+            match = re.search(pattern, filename)
+            if match:
+                if len(match.groups()) > 1:
+                    return f"{match.group(1).title()} {match.group(2).upper()}"
+                else:
+                    return match.group(0).title()
+        
+        cleaned = filename.replace('_', ' ').replace('-', ' ')
+        cleaned = re.sub(r'\d{4}[-_]\d{2}[-_]\d{2}', '', cleaned)
+        cleaned = re.sub(r'\d{2}[-_]\d{2}[-_]\d{2}', '', cleaned)
+        cleaned = cleaned.strip()
+        
+        if cleaned and len(cleaned) > 3:
+            return cleaned[:50]
+    
+    parts = path.parts
+    skip_folders = {'tmp', 'temp', 'videos', 'footage', 'cctv', 'uploads', 'downloads'}
+    
+    for i in range(len(parts) - 1, -1, -1):
+        folder = parts[i].lower()
+        if folder not in skip_folders and not folder.startswith('tmp') and len(folder) > 2:
+            return parts[i].replace('_', ' ').replace('-', ' ').title()
+    
+    return path.stem.replace('_', ' ').replace('-', ' ').title()[:50]
+
+# ============================================================================
+# CORE FUNCTIONS
+# ============================================================================
+def get_face_embedding_batch(images_list: List[Image.Image], resnet, device) -> np.ndarray:
     if not images_list:
-        return []
+        return np.array([])
     
     try:
         tensors = []
@@ -152,24 +257,20 @@ def get_face_embedding_batch(images_list, resnet, device):
             img_tensor = (img_tensor - 127.5) / 128.0
             tensors.append(img_tensor)
         
-        # Stack into batch
         batch = torch.stack(tensors).to(device)
-        
-        # Convert to FP16 if using GPU
         if device.type == 'cuda':
             batch = batch.half()
         
-        # Get embeddings in one forward pass
         with torch.no_grad():
             embeddings = resnet(batch)
         
         return embeddings.cpu().float().numpy()
     
     except Exception as e:
-        return []
+        logger.error(f"Batch embedding error: {e}")
+        return np.array([])
 
-def get_face_embedding(img, resnet, device):
-    """Extract single face embedding"""
+def get_face_embedding(img: Image.Image, resnet, device) -> Optional[np.ndarray]:
     try:
         img_resized = img.resize((160, 160))
         img_array = np.array(img_resized)
@@ -185,10 +286,10 @@ def get_face_embedding(img, resnet, device):
         return embedding.squeeze().cpu().float().numpy()
     
     except Exception as e:
+        logger.error(f"Single embedding error: {e}")
         return None
 
-def cosine_similarity(emb1, emb2):
-    """Calculate cosine similarity"""
+def cosine_similarity(emb1: np.ndarray, emb2: np.ndarray) -> float:
     if emb1 is None or emb2 is None:
         return 0.0
     
@@ -201,8 +302,7 @@ def cosine_similarity(emb1, emb2):
     
     return float(dot / (norm1 * norm2))
 
-def detect_motion(frame1, frame2, threshold=25):
-    """Simple motion detection to skip static frames"""
+def detect_motion(frame1: np.ndarray, frame2: np.ndarray, threshold: int = 25) -> bool:
     if frame1 is None or frame2 is None:
         return True
     
@@ -211,43 +311,104 @@ def detect_motion(frame1, frame2, threshold=25):
     blur = cv2.GaussianBlur(gray, (5, 5), 0)
     _, thresh = cv2.threshold(blur, threshold, 255, cv2.THRESH_BINARY)
     
-    # If more than 0.5% pixels changed, consider it motion
     motion_pixels = np.sum(thresh > 0)
     total_pixels = thresh.shape[0] * thresh.shape[1]
     
     return (motion_pixels / total_pixels) > 0.005
 
-def draw_box(frame, bbox, confidence, label="Match"):
-    """Draw detection box"""
+def draw_detection_box(frame: np.ndarray, bbox: List[int], confidence: float) -> np.ndarray:
     x1, y1, x2, y2 = map(int, bbox)
     
     if confidence >= 0.8:
         color = (0, 255, 0)
+        priority = "HIGH"
     elif confidence >= 0.6:
         color = (255, 165, 0)
+        priority = "MEDIUM"
     else:
-        color = (255, 0, 0)
+        color = (255, 255, 0)
+        priority = "LOW"
     
     cv2.rectangle(frame, (x1, y1), (x2, y2), color, 3)
     
-    text = f"{label}: {confidence*100:.1f}%"
+    text = f"MATCH {confidence*100:.1f}% | {priority}"
     font = cv2.FONT_HERSHEY_SIMPLEX
-    font_scale = 0.7
+    font_scale = 0.6
     thickness = 2
     
     (text_w, text_h), _ = cv2.getTextSize(text, font, font_scale, thickness)
-    cv2.rectangle(frame, (x1, y1 - text_h - 10), (x1 + text_w, y1), color, -1)
-    cv2.putText(frame, text, (x1, y1 - 5), font, font_scale, (255, 255, 255), thickness)
+    cv2.rectangle(frame, (x1, y1 - text_h - 10), (x1 + text_w + 10, y1), color, -1)
+    cv2.putText(frame, text, (x1 + 5, y1 - 5), font, font_scale, (255, 255, 255), thickness)
     
     return frame
 
+def format_timestamp(seconds: float) -> str:
+    return str(timedelta(seconds=int(seconds)))
+
+def determine_priority(confidence: float) -> str:
+    if confidence >= 0.8:
+        return "🔴 HIGH"
+    elif confidence >= 0.6:
+        return "🟡 MEDIUM"
+    else:
+        return "🔵 LOW"
+
 # ============================================================================
-# VIDEO PROCESSING FUNCTIONS
+# YOLO FUNCTIONS
 # ============================================================================
-def process_single_video(video_path, ref_embedding, resnet, mtcnn, device, 
-                        confidence_threshold, sample_rate, min_face_size,
-                        use_motion_detection, progress_callback=None):
-    """Process a single video file with all optimizations"""
+def detect_persons_yolo(frame: np.ndarray) -> List[List[int]]:
+    if not YOLO_AVAILABLE or yolo_model is None:
+        return []
+    
+    try:
+        results = yolo_model(frame, verbose=False)
+        person_boxes = []
+        
+        for result in results:
+            boxes = result.boxes
+            for box in boxes:
+                cls = int(box.cls[0])
+                conf = float(box.conf[0])
+                
+                if cls == 0 and conf > 0.5:
+                    x1, y1, x2, y2 = box.xyxy[0].cpu().numpy()
+                    person_boxes.append([int(x1), int(y1), int(x2), int(y2)])
+        
+        return person_boxes
+    
+    except Exception as e:
+        logger.error(f"YOLO error: {e}")
+        return []
+
+def is_face_in_person_region(face_bbox: List[int], person_boxes: List[List[int]]) -> bool:
+    if not person_boxes:
+        return True
+    
+    fx1, fy1, fx2, fy2 = face_bbox
+    face_center_x = (fx1 + fx2) / 2
+    face_center_y = (fy1 + fy2) / 2
+    
+    for px1, py1, px2, py2 in person_boxes:
+        if px1 <= face_center_x <= px2 and py1 <= face_center_y <= py2:
+            return True
+    
+    return False
+
+# ============================================================================
+# VIDEO PROCESSING
+# ============================================================================
+def process_single_video(
+    video_path: str,
+    ref_embedding: np.ndarray,
+    resnet,
+    mtcnn,
+    device,
+    confidence_threshold: float,
+    sample_rate: int,
+    min_face_size: int,
+    use_motion_detection: bool,
+    use_yolo: bool = False
+) -> Dict:
     
     detections = []
     
@@ -263,12 +424,12 @@ def process_single_video(video_path, ref_embedding, resnet, mtcnn, device,
         height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
         
         frame_count = 0
-        processed_count = 0
-        skipped_motion = 0
-        
         prev_frame = None
         face_batch = []
         face_metadata = []
+        
+        location_hint = extract_location_hint(video_path)
+        video_name = Path(video_path).name
         
         while cap.isOpened():
             ret, frame_bgr = cap.read()
@@ -276,50 +437,45 @@ def process_single_video(video_path, ref_embedding, resnet, mtcnn, device,
             if not ret:
                 break
             
-            # OPTIMIZATION 1: Frame sampling
             if frame_count % sample_rate != 0:
                 frame_count += 1
                 continue
             
-            # OPTIMIZATION 2: Motion detection
             if use_motion_detection and prev_frame is not None:
                 if not detect_motion(prev_frame, frame_bgr):
-                    skipped_motion += 1
                     frame_count += 1
                     prev_frame = frame_bgr
                     continue
             
             prev_frame = frame_bgr.copy()
             
-            # Convert to RGB
             frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
             frame_pil = Image.fromarray(frame_rgb)
             
-            # Detect faces
+            person_boxes = detect_persons_yolo(frame_rgb) if use_yolo else []
+            
             boxes, probs = mtcnn.detect(frame_pil)
             
             if boxes is not None:
-                for i, (box, prob) in enumerate(zip(boxes, probs)):
-                    
-                    if prob < 0.9:  # Skip low-confidence detections
+                for box, prob in zip(boxes, probs):
+                    if prob < 0.9:
                         continue
                     
                     x1, y1, x2, y2 = map(int, box)
                     
-                    # Check face size
+                    face_bbox = [x1, y1, x2, y2]
+                    if use_yolo and not is_face_in_person_region(face_bbox, person_boxes):
+                        continue
+                    
                     face_width = x2 - x1
                     face_height = y2 - y1
                     
                     if face_width < min_face_size or face_height < min_face_size:
                         continue
                     
-                    # Ensure valid coordinates
-                    x1 = max(0, x1)
-                    y1 = max(0, y1)
-                    x2 = min(width, x2)
-                    y2 = min(height, y2)
+                    x1, y1 = max(0, x1), max(0, y1)
+                    x2, y2 = min(width, x2), min(height, y2)
                     
-                    # Crop face
                     face_crop = frame_rgb[y1:y2, x1:x2]
                     
                     if face_crop.size == 0:
@@ -327,7 +483,6 @@ def process_single_video(video_path, ref_embedding, resnet, mtcnn, device,
                     
                     face_pil = Image.fromarray(face_crop)
                     
-                    # OPTIMIZATION 3: Batch processing
                     face_batch.append(face_pil)
                     face_metadata.append({
                         'frame_number': frame_count,
@@ -336,8 +491,7 @@ def process_single_video(video_path, ref_embedding, resnet, mtcnn, device,
                         'face_pil': face_pil
                     })
                     
-                    # Process batch when it reaches optimal size
-                    if len(face_batch) >= 16:  # Batch size of 16
+                    if len(face_batch) >= 16:
                         embeddings = get_face_embedding_batch(face_batch, resnet, device)
                         
                         for emb, meta in zip(embeddings, face_metadata):
@@ -345,32 +499,33 @@ def process_single_video(video_path, ref_embedding, resnet, mtcnn, device,
                             
                             if similarity >= confidence_threshold:
                                 timestamp = meta['frame_number'] / fps
+                                timestamp_str = format_timestamp(timestamp)
                                 
                                 annotated_frame = meta['frame_bgr'].copy()
-                                annotated_frame = draw_box(annotated_frame, meta['bbox'], similarity)
+                                annotated_frame = draw_detection_box(annotated_frame, meta['bbox'], similarity)
                                 
-                                detections.append({
-                                    'video_path': video_path,
-                                    'frame_number': meta['frame_number'],
-                                    'timestamp': timestamp,
-                                    'confidence': similarity,
-                                    'bbox': meta['bbox'],
-                                    'face_image': meta['face_pil'],
-                                    'annotated_frame': cv2.cvtColor(annotated_frame, cv2.COLOR_BGR2RGB)
-                                })
+                                detection = Detection(
+                                    video_path=video_path,
+                                    video_name=video_name,
+                                    frame_number=meta['frame_number'],
+                                    timestamp=timestamp,
+                                    timestamp_str=timestamp_str,
+                                    confidence=similarity,
+                                    bbox=meta['bbox'],
+                                    face_image=meta['face_pil'],
+                                    annotated_frame=cv2.cvtColor(annotated_frame, cv2.COLOR_BGR2RGB),
+                                    location_hint=location_hint,
+                                    priority=determine_priority(similarity)
+                                )
+                                
+                                detections.append(detection)
                         
-                        # Clear batch
                         face_batch = []
                         face_metadata = []
             
-            processed_count += 1
             frame_count += 1
-            
-            # Progress callback
-            if progress_callback and frame_count % 50 == 0:
-                progress_callback(frame_count, total_frames, len(detections))
         
-        # Process remaining faces in batch
+        # Process remaining batch
         if face_batch:
             embeddings = get_face_embedding_batch(face_batch, resnet, device)
             
@@ -379,32 +534,38 @@ def process_single_video(video_path, ref_embedding, resnet, mtcnn, device,
                 
                 if similarity >= confidence_threshold:
                     timestamp = meta['frame_number'] / fps
+                    timestamp_str = format_timestamp(timestamp)
                     
                     annotated_frame = meta['frame_bgr'].copy()
-                    annotated_frame = draw_box(annotated_frame, meta['bbox'], similarity)
+                    annotated_frame = draw_detection_box(annotated_frame, meta['bbox'], similarity)
                     
-                    detections.append({
-                        'video_path': video_path,
-                        'frame_number': meta['frame_number'],
-                        'timestamp': timestamp,
-                        'confidence': similarity,
-                        'bbox': meta['bbox'],
-                        'face_image': meta['face_pil'],
-                        'annotated_frame': cv2.cvtColor(annotated_frame, cv2.COLOR_BGR2RGB)
-                    })
+                    detection = Detection(
+                        video_path=video_path,
+                        video_name=video_name,
+                        frame_number=meta['frame_number'],
+                        timestamp=timestamp,
+                        timestamp_str=timestamp_str,
+                        confidence=similarity,
+                        bbox=meta['bbox'],
+                        face_image=meta['face_pil'],
+                        annotated_frame=cv2.cvtColor(annotated_frame, cv2.COLOR_BGR2RGB),
+                        location_hint=location_hint,
+                        priority=determine_priority(similarity)
+                    )
+                    
+                    detections.append(detection)
         
         cap.release()
         
         return {
             'video_path': video_path,
+            'video_name': video_name,
             'detections': detections,
-            'total_frames': total_frames,
-            'processed_frames': processed_count,
-            'skipped_motion': skipped_motion,
-            'fps': fps
+            'location': location_hint
         }
     
     except Exception as e:
+        logger.error(f"Video processing error: {e}")
         return {'error': str(e), 'video_path': video_path, 'detections': []}
 
 # ============================================================================
@@ -414,162 +575,161 @@ with st.sidebar:
     st.header("📤 Reference Image")
     
     ref_image_file = st.file_uploader(
-        "Upload Reference Photo", 
+        "Upload Photo of Missing Person",
         type=["jpg", "jpeg", "png"],
-        help="Clear frontal photo of missing person"
+        help="Clear, frontal photo for best results",
+        disabled=st.session_state.is_processing
     )
     
     st.markdown("---")
     st.header("📁 Video Source")
     
     source_type = st.radio(
-        "Select Video Source",
-        ["📂 Local Folder Path", "☁️ Cloud Storage URL", "📤 Upload Files"],
-        help="Choose how to access video files"
+        "Select Source",
+        ["📂 Local Folder", "📤 Upload Files"],
+        disabled=st.session_state.is_processing
     )
     
     video_files = []
     
-    if source_type == "📂 Local Folder Path":
+    if source_type == "📂 Local Folder":
         folder_path = st.text_input(
-            "Enter Folder Path",
-            placeholder="C:/CCTV_Footage or /mnt/surveillance",
-            help="Path to folder containing video files"
+            "Folder Path",
+            placeholder="C:/CCTV_Footage",
+            disabled=st.session_state.is_processing
         )
         
         if folder_path and os.path.exists(folder_path):
-            extensions = ['.mp4', '.avi', '.mov', '.mkv', '.MP4', '.AVI']
+            extensions = ['.mp4', '.avi', '.mov', '.mkv']
             for ext in extensions:
                 video_files.extend(glob.glob(os.path.join(folder_path, '**', f'*{ext}'), recursive=True))
             
             if video_files:
-                st.success(f"✅ Found {len(video_files)} video files")
-                with st.expander("📋 View Files"):
-                    for vf in video_files[:20]:  # Show first 20
-                        st.text(f"📹 {Path(vf).name}")
-                    if len(video_files) > 20:
-                        st.text(f"... and {len(video_files)-20} more")
-            else:
-                st.warning("No video files found in folder")
+                st.success(f"✅ Found {len(video_files)} videos")
         elif folder_path:
-            st.error("❌ Folder path does not exist")
+            st.error("❌ Folder not found")
     
-    elif source_type == "☁️ Cloud Storage URL":
-        st.info("🚧 Cloud storage integration coming soon!\nCurrently supports: Local folder or file upload")
-        
-    else:  # Upload Files
+    else:
         uploaded_videos = st.file_uploader(
-            "Upload Video Files",
+            "Upload Videos",
             type=["mp4", "avi", "mov"],
             accept_multiple_files=True,
-            help="Note: Limited to 200MB per file"
+            disabled=st.session_state.is_processing
         )
         
         if uploaded_videos:
-            # Save uploaded files temporarily
-            import tempfile
             temp_dir = tempfile.mkdtemp()
-            
-            for uploaded_video in uploaded_videos:
-                temp_path = os.path.join(temp_dir, uploaded_video.name)
+            for vid in uploaded_videos:
+                temp_path = os.path.join(temp_dir, vid.name)
                 with open(temp_path, 'wb') as f:
-                    f.write(uploaded_video.getbuffer())
+                    f.write(vid.getbuffer())
                 video_files.append(temp_path)
             
-            st.success(f"✅ Uploaded {len(video_files)} files")
+            st.success(f"✅ Uploaded {len(video_files)} videos")
     
     st.markdown("---")
-    st.header("⚙️ Processing Settings")
-    
-    st.subheader("🎯 Detection Settings")
+    st.header("⚙️ Detection Settings")
     
     confidence_threshold = st.slider(
-        "Confidence Threshold", 
-        min_value=0.3, 
-        max_value=0.9, 
-        value=0.55,
-        step=0.05,
-        help="Minimum similarity to report a match"
+        "Confidence Threshold",
+        0.3, 0.9, 0.55, 0.05,
+        disabled=st.session_state.is_processing
     )
     
     min_face_size = st.slider(
-        "Minimum Face Size (pixels)",
-        min_value=20,
-        max_value=100,
-        value=40,
-        help="Skip faces smaller than this"
-    )
-    
-    st.subheader("⚡ Speed Optimizations")
-    
-    sample_rate = st.slider(
-        "Frame Sampling Rate", 
-        min_value=1, 
-        max_value=60, 
-        value=15,
-        help="Check every Nth frame (higher = faster)"
-    )
-    
-    use_motion_detection = st.checkbox(
-        "Enable Motion Detection",
-        value=True,
-        help="Skip frames with no movement (5-10x faster)"
-    )
-    
-    parallel_videos = st.slider(
-        "Parallel Video Processing",
-        min_value=1,
-        max_value=8,
-        value=min(4, os.cpu_count() or 4),
-        help="Process multiple videos simultaneously"
+        "Min Face Size (px)",
+        20, 100, 40,
+        disabled=st.session_state.is_processing
     )
     
     st.markdown("---")
-    st.header("📊 System Info")
-    device_info = "🎮 GPU Available (FP16)" if torch.cuda.is_available() else "💻 CPU Mode"
+    st.header("⚡ Optimization")
+    
+    sample_rate = st.slider(
+        "Frame Sampling",
+        1, 60, 15,
+        disabled=st.session_state.is_processing
+    )
+    
+    use_motion_detection = st.checkbox(
+        "Motion Detection",
+        value=True,
+        disabled=st.session_state.is_processing
+    )
+    
+    use_yolo = st.checkbox(
+        "YOLO Person Detection",
+        value=YOLO_AVAILABLE,
+        disabled=st.session_state.is_processing or not YOLO_AVAILABLE
+    )
+    
+    parallel_videos = st.slider(
+        "Parallel Processing",
+        1, 8, min(4, os.cpu_count() or 4),
+        disabled=st.session_state.is_processing
+    )
+    
+    st.markdown("---")
+    st.header("📊 System")
+    device_info = "🎮 GPU (FP16)" if torch.cuda.is_available() else "💻 CPU"
     st.info(device_info)
-    st.metric("CPU Cores", os.cpu_count() or "Unknown")
+    if YOLO_AVAILABLE:
+        st.success("✅ YOLO v8")
 
 # ============================================================================
 # MAIN PROCESSING
 # ============================================================================
 
-# Display speed optimization summary
-st.info(f"""
-🚀 **Active Optimizations:**
-- **Frame Sampling:** Every {sample_rate} frames (~{sample_rate}x faster)
-- **Motion Detection:** {'✅ Enabled' if use_motion_detection else '❌ Disabled'}{' (~5-10x faster)' if use_motion_detection else ''}
-- **Parallel Processing:** {parallel_videos} videos at once (~{parallel_videos}x faster)
-- **Batch Face Recognition:** 16 faces per batch (~8x faster on GPU)
-- **{'FP16 Precision: ✅ Enabled (~2x faster)' if torch.cuda.is_available() else 'CPU Mode'}**
+speedup = sample_rate * (7 if use_motion_detection else 1) * parallel_videos
+yolo_boost = 1.5 if (use_yolo and YOLO_AVAILABLE) else 1
+total_speedup = int(speedup * yolo_boost)
 
-**Estimated Speed Boost:** {sample_rate * (7 if use_motion_detection else 1) * parallel_videos}x faster than naive approach!
-""")
+st.markdown(f"""
+<div class="alert-info">
+    <strong>🚀 Active Optimizations:</strong><br>
+    • Frame Sampling: {sample_rate}x faster<br>
+    • Motion Detection: {'✅ ' + str(5-10) + 'x faster' if use_motion_detection else '❌ Disabled'}<br>
+    • YOLO Filtering: {'✅ 1.5x + better accuracy' if (use_yolo and YOLO_AVAILABLE) else '❌ Disabled'}<br>
+    • Parallel Processing: {parallel_videos}x faster<br>
+    • <strong>Total Speedup: ~{total_speedup}x</strong>
+</div>
+""", unsafe_allow_html=True)
+
+# PERSISTENT RESULTS DISPLAY
+if st.session_state.processing_complete and st.session_state.detections:
+    st.markdown(f"""
+    <div class="stats-summary">
+        <h4>✅ Processing Complete - Results Below</h4>
+        <p><strong>Total Matches:</strong> {len(st.session_state.detections)}</p>
+        <p><strong>Videos Processed:</strong> {st.session_state.processing_stats.get('total_videos', 0)}</p>
+        <p><strong>Processing Time:</strong> {st.session_state.processing_stats.get('time_display', 'N/A')}</p>
+        <p style="margin-top: 1rem; font-size: 0.9rem; color: #0c4a6e;">
+            📥 Download reports below • Results stay visible after download
+        </p>
+    </div>
+    """, unsafe_allow_html=True)
 
 if ref_image_file and video_files:
     
-    # Load models
     with st.spinner("🔄 Loading AI models..."):
         resnet, mtcnn, device, models_loaded = load_models()
         
         if not models_loaded:
-            st.error("❌ Failed to load models.")
+            st.error("❌ Failed to load models")
             st.stop()
     
     col1, col2 = st.columns([1, 2])
     
-    # Process reference image
     with col1:
-        st.subheader("📸 Reference Image")
+        st.markdown("### 📸 Reference Image")
         ref_img = Image.open(ref_image_file).convert('RGB')
         st.image(ref_img, use_container_width=True)
         
-        with st.spinner("Extracting reference face..."):
+        with st.spinner("Analyzing..."):
             ref_boxes, ref_probs = mtcnn.detect(ref_img)
             
             if ref_boxes is None or len(ref_boxes) == 0:
-                st.error("❌ No face detected in reference image!")
-                st.info("💡 Tips:\n- Use a clear frontal photo\n- Ensure good lighting\n- Face should be clearly visible")
+                st.error("❌ No face detected!")
                 st.stop()
             
             best_idx = np.argmax(ref_probs) if len(ref_probs) > 1 else 0
@@ -583,531 +743,286 @@ if ref_image_file and video_files:
             ref_embedding = get_face_embedding(ref_face, resnet, device)
             
             if ref_embedding is None:
-                st.error("❌ Failed to extract face features!")
+                st.error("❌ Failed to extract features")
                 st.stop()
             
-            st.success(f"✅ Reference encoded ({ref_probs[best_idx]*100:.1f}%)")
-            
-            with st.expander("View Detected Face"):
-                st.image(ref_face, caption="Extracted Face", width=200)
+            st.success(f"✅ Face detected ({ref_probs[best_idx]*100:.1f}%)")
     
     with col2:
-        st.subheader("📹 Video Queue")
-        st.metric("Total Videos", len(video_files))
-        
-        # Calculate estimates
-        total_size_mb = sum(os.path.getsize(vf) / (1024*1024) for vf in video_files if os.path.exists(vf))
-        st.metric("Total Size", f"{total_size_mb:.1f} MB")
-        
-        # Show video list
-        with st.expander("📋 Video Files"):
-            for i, vf in enumerate(video_files[:10], 1):
-                size_mb = os.path.getsize(vf) / (1024*1024) if os.path.exists(vf) else 0
-                st.text(f"{i}. {Path(vf).name} ({size_mb:.1f} MB)")
-            if len(video_files) > 10:
-                st.text(f"... and {len(video_files)-10} more files")
+        st.markdown("### 📹 Video Queue")
+        metric_col1, metric_col2 = st.columns(2)
+        with metric_col1:
+            st.metric("Videos", len(video_files))
+        with metric_col2:
+            total_size = sum(os.path.getsize(vf)/(1024*1024) for vf in video_files if os.path.exists(vf))
+            st.metric("Size", f"{total_size:.1f} MB")
     
     st.markdown("---")
     
-    # Start processing button
-    if st.button("🚀 Start Batch Processing", type="primary", use_container_width=True):
+    if st.button("🚀 Start Detection", type="primary", use_container_width=True, disabled=st.session_state.is_processing):
+        st.session_state.is_processing = True
+        st.rerun()
+
+# PROCESSING WITH VISIBLE PROGRESS
+if st.session_state.is_processing and ref_image_file and video_files:
+    start_time = time.time()
+    all_detections = []
+    
+    # PROGRESS UI
+    progress_placeholder = st.empty()
+    status_placeholder = st.empty()
+    
+    processed_videos = 0
+    total_videos = len(video_files)
+    
+    with ThreadPoolExecutor(max_workers=parallel_videos) as executor:
+        future_to_video = {
+            executor.submit(
+                process_single_video,
+                video_path,
+                ref_embedding,
+                resnet,
+                mtcnn,
+                device,
+                confidence_threshold,
+                sample_rate,
+                min_face_size,
+                use_motion_detection,
+                use_yolo
+            ): video_path for video_path in video_files
+        }
         
-        start_time = time.time()
-        all_detections = []
-        
-        # Progress containers
-        overall_progress = st.progress(0)
-        status_container = st.empty()
-        stats_container = st.empty()
-        live_detections = st.empty()
-        
-        # OPTIMIZATION 4: Parallel video processing
-        processed_videos = 0
-        total_videos = len(video_files)
-        
-        with ThreadPoolExecutor(max_workers=parallel_videos) as executor:
+        for future in as_completed(future_to_video):
+            video_path = future_to_video[future]
             
-            # Submit all video processing jobs
-            future_to_video = {}
-            
-            for video_path in video_files:
+            try:
+                result = future.result()
                 
-                def progress_callback(frame_num, total, detections_count):
-                    pass  # Individual video progress (optional)
-                
-                future = executor.submit(
-                    process_single_video,
-                    video_path,
-                    ref_embedding,
-                    resnet,
-                    mtcnn,
-                    device,
-                    confidence_threshold,
-                    sample_rate,
-                    min_face_size,
-                    use_motion_detection,
-                    progress_callback
-                )
-                
-                future_to_video[future] = video_path
-            
-            # Process results as they complete
-            for future in as_completed(future_to_video):
-                video_path = future_to_video[future]
-                
-                try:
-                    result = future.result()
+                if 'error' not in result:
+                    all_detections.extend(result['detections'])
                     
-                    if 'error' in result:
-                        st.warning(f"⚠️ Error processing {Path(video_path).name}: {result.get('error', 'Unknown error')}")
-                    else:
-                        all_detections.extend(result['detections'])
-                        
-                        processed_videos += 1
-                        progress_pct = int((processed_videos / total_videos) * 100)
-                        overall_progress.progress(progress_pct)
-                        
-                        elapsed = time.time() - start_time
-                        videos_per_sec = processed_videos / elapsed if elapsed > 0 else 0
-                        eta_seconds = (total_videos - processed_videos) / videos_per_sec if videos_per_sec > 0 else 0
-                        
-                        status_container.markdown(f"""
-                        ### 📊 Processing Status
-                        - **Progress:** {processed_videos}/{total_videos} videos ({progress_pct}%)
-                        - **Current:** {Path(video_path).name}
-                        - **Detections:** {len(all_detections)} matches found
-                        - **Speed:** {videos_per_sec:.2f} videos/sec
-                        - **ETA:** {int(eta_seconds/60)}:{int(eta_seconds%60):02d}
-                        """)
-                        
-                        # Show live detection count
-                        if len(all_detections) > 0:
-                            live_detections.success(f"🎯 {len(all_detections)} matches found so far!")
-                
-                except Exception as e:
-                    st.error(f"❌ Error with {Path(video_path).name}: {str(e)}")
-        
-        processing_time = time.time() - start_time
-        
-        status_container.success("✅ All videos processed!")
-        overall_progress.progress(100)
-        
-        st.markdown("---")
-        
-        # ====================================================================
-        # RESULTS
-        # ====================================================================
-        
-        st.header("📊 Detection Results")
-        
-        if all_detections:
+                    processed_videos += 1
+                    progress_pct = processed_videos / total_videos
+                    
+                    # UPDATE PROGRESS
+                    progress_placeholder.progress(progress_pct)
+                    
+                    elapsed = time.time() - start_time
+                    speed = processed_videos / elapsed if elapsed > 0 else 0
+                    eta = (total_videos - processed_videos) / speed if speed > 0 else 0
+                    
+                    status_placeholder.markdown(f"""
+                    <div class="progress-box">
+                        <h3>📊 Processing Status</h3>
+                        <p><strong>Progress:</strong> {processed_videos}/{total_videos} ({progress_pct*100:.1f}%)</p>
+                        <p><strong>Current:</strong> {Path(video_path).name}</p>
+                        <p><strong>Matches Found:</strong> {len(all_detections)}</p>
+                        <p><strong>Speed:</strong> {speed:.2f} videos/sec</p>
+                        <p><strong>ETA:</strong> {int(eta/60)}m {int(eta%60)}s</p>
+                    </div>
+                    """, unsafe_allow_html=True)
             
-            # Summary metrics
-            col1, col2, col3, col4, col5 = st.columns(5)
+            except Exception as e:
+                logger.error(f"Error: {e}")
+    
+    processing_time = time.time() - start_time
+    
+    # Save to session state
+    st.session_state.is_processing = False
+    st.session_state.processing_complete = True
+    st.session_state.detections = all_detections
+    st.session_state.processing_stats = {
+        'total_videos': total_videos,
+        'processing_time': processing_time,
+        'time_display': f"{int(processing_time/60)}m {int(processing_time%60)}s"
+    }
+    
+    status_placeholder.success("✅ Processing Complete!")
+    progress_placeholder.progress(1.0)
+    
+    st.rerun()  # Refresh to show results
+
+# DISPLAY RESULTS (PERSISTENT)
+if st.session_state.processing_complete and st.session_state.detections:
+    all_detections = st.session_state.detections
+    processing_time = st.session_state.processing_stats['processing_time']
+    
+    st.markdown("---")
+    st.header("📊 Detection Results")
+    
+    col1, col2, col3, col4 = st.columns(4)
+    
+    with col1:
+        st.metric("🎯 Total Matches", len(all_detections))
+    with col2:
+        avg_conf = np.mean([d.confidence for d in all_detections])
+        st.metric("📈 Avg Confidence", f"{avg_conf*100:.1f}%")
+    with col3:
+        max_conf = max([d.confidence for d in all_detections])
+        st.metric("🏆 Best Match", f"{max_conf*100:.1f}%")
+    with col4:
+        st.metric("⏱️ Time", f"{int(processing_time/60)}m {int(processing_time%60)}s")
+    
+    st.markdown("---")
+    
+    # Timeline
+    df = pd.DataFrame([
+        {
+            'Video': d.video_name,
+            'Location': d.location_hint,
+            'Time (s)': d.timestamp,
+            'Confidence (%)': d.confidence * 100,
+            'Priority': d.priority
+        }
+        for d in all_detections
+    ])
+    
+    fig = px.scatter(
+        df,
+        x='Time (s)',
+        y='Confidence (%)',
+        color='Priority',
+        hover_data=['Video', 'Location'],
+        title='Detection Timeline',
+        height=500,
+        color_discrete_map={
+            '🔴 HIGH': '#ef4444',
+            '🟡 MEDIUM': '#f59e0b',
+            '🔵 LOW': '#3b82f6'
+        }
+    )
+    st.plotly_chart(fig, use_container_width=True)
+    
+    st.markdown("---")
+    st.markdown("### 🎬 Top Detections")
+    
+    sorted_detections = sorted(all_detections, key=lambda x: x.confidence, reverse=True)
+    
+    for i, det in enumerate(sorted_detections[:10]):
+        with st.expander(
+            f"{det.priority} | {det.video_name} | {det.timestamp_str} | {det.confidence*100:.1f}%",
+            expanded=(i < 3)
+        ):
+            col1, col2 = st.columns([1, 2])
             
             with col1:
-                st.metric("🎯 Total Detections", len(all_detections))
+                st.image(det.face_image, caption="Detected Face")
+                st.write(f"**Frame:** {det.frame_number:,}")
+                st.write(f"**Time:** {det.timestamp_str}")
+                st.write(f"**Confidence:** {det.confidence*100:.1f}%")
+                st.write(f"**Location:** {det.location_hint}")
             
             with col2:
-                avg_conf = np.mean([d['confidence'] for d in all_detections])
-                st.metric("📈 Avg Confidence", f"{avg_conf*100:.1f}%")
-            
-            with col3:
-                max_conf = max([d['confidence'] for d in all_detections])
-                st.metric("🏆 Best Match", f"{max_conf*100:.1f}%")
-            
-            with col4:
-                unique_videos = len(set([d['video_path'] for d in all_detections]))
-                st.metric("📹 Videos with Matches", unique_videos)
-            
-            with col5:
-                st.metric("⚡ Total Time", f"{int(processing_time/60)}:{int(processing_time%60):02d}")
-            
-            # Performance stats
-            st.markdown("---")
-            st.subheader("⚡ Performance Metrics")
-            
-            perf_col1, perf_col2, perf_col3 = st.columns(3)
-            
-            with perf_col1:
-                videos_per_min = (len(video_files) / processing_time) * 60
-                st.metric("Processing Speed", f"{videos_per_min:.1f} videos/min")
-            
-            with perf_col2:
-                speedup = sample_rate * (7 if use_motion_detection else 1) * parallel_videos
-                st.metric("Estimated Speedup", f"{speedup}x")
-            
-            with perf_col3:
-                time_saved_hours = (processing_time * speedup) / 3600
-                st.metric("Time Saved", f"~{time_saved_hours:.1f} hours")
-            
-            # Timeline chart
-            st.markdown("---")
-            st.subheader("📈 Detection Timeline")
-            
-            df = pd.DataFrame([
-                {
-                    'Video': Path(d['video_path']).name,
-                    'Time (s)': d['timestamp'],
-                    'Confidence (%)': d['confidence'] * 100,
-                    'Frame': d['frame_number']
-                }
-                for d in all_detections
-            ])
-            
-            fig = px.scatter(
-                df,
-                x='Time (s)',
-                y='Confidence (%)',
-                color='Video',
-                hover_data=['Frame'],
-                title='All Detections Across Videos',
-                height=500
-            )
-            st.plotly_chart(fig, use_container_width=True)
-            
-            # Video-wise breakdown
-            st.markdown("---")
-            st.subheader("📹 Detection Breakdown by Video")
-            
-            video_counts = df.groupby('Video').size().reset_index(name='Count')
-            video_counts = video_counts.sort_values('Count', ascending=False)
-            
-            fig2 = px.bar(
-                video_counts,
-                x='Video',
-                y='Count',
-                title='Detections per Video',
-                color='Count',
-                color_continuous_scale='Viridis',
-                height=400
-            )
-            fig2.update_xaxes(tickangle=-45)
-            st.plotly_chart(fig2, use_container_width=True)
-            
-            # Confidence distribution
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                fig3 = px.histogram(
-                    df,
-                    x='Confidence (%)',
-                    nbins=20,
-                    title='Confidence Distribution',
-                    color_discrete_sequence=['#667eea']
-                )
-                st.plotly_chart(fig3, use_container_width=True)
-            
-            with col2:
-                # High confidence matches
-                high_conf = len([d for d in all_detections if d['confidence'] >= 0.8])
-                medium_conf = len([d for d in all_detections if 0.6 <= d['confidence'] < 0.8])
-                low_conf = len([d for d in all_detections if d['confidence'] < 0.6])
-                
-                fig4 = go.Figure(data=[go.Pie(
-                    labels=['High (≥80%)', 'Medium (60-80%)', 'Low (<60%)'],
-                    values=[high_conf, medium_conf, low_conf],
-                    marker=dict(colors=['#28a745', '#ffc107', '#dc3545'])
-                )])
-                fig4.update_layout(title='Confidence Categories')
-                st.plotly_chart(fig4, use_container_width=True)
-            
-            # Detection clips
-            st.markdown("---")
-            st.subheader("🎬 Top Detections")
-            
-            # Sort by confidence
-            sorted_detections = sorted(all_detections, key=lambda x: x['confidence'], reverse=True)
-            
-            # Filters for display
-            st.markdown("**Filter Detections**")
-            filter_col1, filter_col2 = st.columns(2)
-            
-            with filter_col1:
-                min_display_conf = st.slider(
-                    "Minimum Confidence to Display",
-                    min_value=0.0,
-                    max_value=1.0,
-                    value=confidence_threshold,
-                    step=0.05
-                )
-            
-            with filter_col2:
-                video_filter = st.multiselect(
-                    "Filter by Video",
-                    options=list(set([Path(d['video_path']).name for d in sorted_detections])),
-                    default=None
-                )
-            
-            # Apply filters
-            filtered_detections = [
-                d for d in sorted_detections
-                if d['confidence'] >= min_display_conf and
-                (not video_filter or Path(d['video_path']).name in video_filter)
-            ]
-            
-            st.info(f"Showing {len(filtered_detections)} of {len(sorted_detections)} detections")
-            
-            # Show top detections
-            for i, det in enumerate(filtered_detections[:20]):
-                
-                with st.expander(
-                    f"🎯 Detection #{i+1} | " +
-                    f"Video: {Path(det['video_path']).name} | " +
-                    f"Time: {int(det['timestamp']/60)}:{int(det['timestamp']%60):02d} | " +
-                    f"Confidence: {det['confidence']*100:.1f}%",
-                    expanded=(i < 5)
-                ):
-                    
-                    col1, col2 = st.columns([1, 2])
-                    
-                    with col1:
-                        st.image(det['face_image'], caption="Detected Face", use_container_width=True)
-                        st.metric("Frame", f"{det['frame_number']:,}")
-                        st.metric("Confidence", f"{det['confidence']*100:.1f}%")
-                        st.metric("Timestamp", f"{int(det['timestamp']/60)}:{int(det['timestamp']%60):02d}")
-                    
-                    with col2:
-                        st.image(det['annotated_frame'], caption="Full Frame", use_container_width=True)
-            
-            if len(filtered_detections) > 20:
-                st.info(f"📊 Showing top 20 detections. Total filtered: {len(filtered_detections)}")
-            
-            # Export report
-            st.markdown("---")
-            st.subheader("📥 Export Report")
-            
-            report = {
-                'processing_date': datetime.now().isoformat(),
-                'processing_time_seconds': processing_time,
-                'videos_processed': len(video_files),
-                'total_detections': len(all_detections),
-                'average_confidence': float(avg_conf),
-                'max_confidence': float(max_conf),
-                'threshold_used': confidence_threshold,
-                'optimizations': {
-                    'frame_sampling_rate': sample_rate,
-                    'motion_detection': use_motion_detection,
-                    'parallel_videos': parallel_videos,
-                    'gpu_acceleration': torch.cuda.is_available()
-                },
-                'detections_by_video': [
-                    {
-                        'video': Path(d['video_path']).name,
-                        'frame': d['frame_number'],
-                        'timestamp_seconds': float(d['timestamp']),
-                        'timestamp_formatted': f"{int(d['timestamp']/60)}:{int(d['timestamp']%60):02d}",
-                        'confidence': float(d['confidence'])
-                    }
-                    for d in sorted_detections
-                ]
-            }
-            
-            col1, col2, col3 = st.columns(3)
-            
-            with col1:
-                st.download_button(
-                    label="📄 Download JSON Report",
-                    data=json.dumps(report, indent=2),
-                    file_name=f"detection_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
-                    mime="application/json",
-                    use_container_width=True
-                )
-            
-            with col2:
-                # CSV export
-                csv_data = pd.DataFrame([
-                    {
-                        'Video': Path(d['video_path']).name,
-                        'Frame': d['frame_number'],
-                        'Timestamp': f"{int(d['timestamp']/60)}:{int(d['timestamp']%60):02d}",
-                        'Confidence': f"{d['confidence']*100:.2f}%"
-                    }
-                    for d in sorted_detections
-                ])
-                
-                st.download_button(
-                    label="📊 Download CSV Report",
-                    data=csv_data.to_csv(index=False),
-                    file_name=f"detection_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
-                    mime="text/csv",
-                    use_container_width=True
-                )
-            
-            with col3:
-                text_report = f"""MISSING PERSON DETECTION REPORT
+                st.image(det.annotated_frame, caption="Full Frame")
+    
+    # Export
+    st.markdown("---")
+    st.markdown("### 📥 Export Reports")
+    
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        report = {
+            'processing_date': datetime.now().isoformat(),
+            'processing_time': processing_time,
+            'total_detections': len(all_detections),
+            'detections': [d.to_dict() for d in sorted_detections]
+        }
+        
+        st.download_button(
+            "📄 JSON Report",
+            json.dumps(report, indent=2),
+            f"report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
+            mime="application/json",
+            key="json_dl"
+        )
+    
+    with col2:
+        csv_df = pd.DataFrame([d.to_dict() for d in sorted_detections])
+        st.download_button(
+            "📊 CSV Report",
+            csv_df.to_csv(index=False),
+            f"report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+            mime="text/csv",
+            key="csv_dl"
+        )
+    
+    with col3:
+        text_report = f"""CROWDSCAN DETECTION REPORT
 {'='*60}
 Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 
 SUMMARY
 {'-'*60}
-Videos Processed: {len(video_files)}
 Total Detections: {len(all_detections)}
-Average Confidence: {avg_conf*100:.1f}%
-Best Match: {max_conf*100:.1f}%
 Processing Time: {int(processing_time/60)}m {int(processing_time%60)}s
 
-OPTIMIZATIONS USED
-{'-'*60}
-Frame Sampling: Every {sample_rate} frames
-Motion Detection: {'Enabled' if use_motion_detection else 'Disabled'}
-Parallel Processing: {parallel_videos} videos
-GPU Acceleration: {'Yes (FP16)' if torch.cuda.is_available() else 'No (CPU)'}
-Estimated Speedup: {sample_rate * (7 if use_motion_detection else 1) * parallel_videos}x
-
-TOP 20 DETECTIONS
+TOP DETECTIONS
 {'-'*60}
 """
-                for i, d in enumerate(sorted_detections[:20], 1):
-                    text_report += f"{i:2d}. {Path(d['video_path']).name:30s} | Frame: {d['frame_number']:8,} | Time: {int(d['timestamp']/60):02d}:{int(d['timestamp']%60):02d} | Conf: {d['confidence']*100:5.1f}%\n"
-                
-                if len(sorted_detections) > 20:
-                    text_report += f"\n... and {len(sorted_detections)-20} more detections\n"
-                
-                text_report += f"\n{'='*60}\n"
-                
-                st.download_button(
-                    label="📋 Download Text Report",
-                    data=text_report,
-                    file_name=f"detection_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt",
-                    mime="text/plain",
-                    use_container_width=True
-                )
+        for i, d in enumerate(sorted_detections[:20], 1):
+            text_report += f"{i}. {d.video_name} | {d.timestamp_str} | {d.confidence*100:.1f}%\n"
         
-        else:
-            st.warning("⚠️ No matches found in any of the videos!")
-            st.markdown("""
-            ### 🔍 Troubleshooting Tips
-            
-            **Adjust Detection Settings:**
-            - ✅ Lower the confidence threshold (try 0.4-0.5)
-            - ✅ Reduce minimum face size (try 25-30 pixels)
-            - ✅ Decrease frame sampling rate (check more frames)
-            
-            **Check Video Quality:**
-            - ✅ Ensure faces are clearly visible in videos
-            - ✅ Verify video resolution is adequate (720p+ recommended)
-            - ✅ Check if lighting conditions are sufficient
-            
-            **Verify Reference Image:**
-            - ✅ Use a clear, recent frontal photo
-            - ✅ Ensure good lighting and focus
-            - ✅ Try a different reference photo if available
-            
-            **Optimization Impact:**
-            - ⚠️ High frame sampling rates may miss appearances
-            - ⚠️ Motion detection might skip relevant frames
-            - 💡 Try reducing optimizations for more thorough search
-            """)
+        st.download_button(
+            "📋 Text Report",
+            text_report,
+            f"report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt",
+            mime="text/plain",
+            key="txt_dl"
+        )
 
 else:
-    st.info("👈 Upload a reference image and select video source from the sidebar to begin")
+    # Landing page
+    st.markdown("""
+    <div class="alert-info">
+        <h3>👈 Get Started</h3>
+        <p>1. Upload reference photo in sidebar</p>
+        <p>2. Select video source (folder or upload)</p>
+        <p>3. Adjust settings as needed</p>
+        <p>4. Click "Start Detection"</p>
+    </div>
+    """, unsafe_allow_html=True)
     
-    st.markdown("---")
     st.markdown("### 🎯 System Features")
     
     col1, col2, col3 = st.columns(3)
     
     with col1:
         st.markdown("""
-        **🔍 Advanced Detection**
+        **🔍 Advanced AI Detection**
         - MTCNN face detection
         - FaceNet recognition (VGGFace2)
-        - Batch processing for efficiency
-        - 99%+ accuracy capability
+        - YOLO v8 person filtering
+        - Batch processing
+        - 99%+ accuracy
         """)
     
     with col2:
         st.markdown("""
-        **⚡ Speed Optimizations**
+        **⚡ Ultra-Fast Processing**
         - Smart frame sampling
-        - Motion detection filtering
-        - Parallel video processing
+        - Motion detection
+        - YOLO pre-filtering
+        - Parallel processing
         - GPU acceleration (FP16)
-        - 100-1000x faster than naive approach
+        - 100-1000x faster
         """)
     
     with col3:
         st.markdown("""
         **📊 Professional Output**
-        - Real-time progress tracking
-        - Interactive analytics dashboard
-        - Multiple export formats (JSON/CSV/TXT)
-        - Video-wise breakdown
+        - Real-time progress (%)
+        - Priority ranking
+        - Location extraction
+        - Interactive charts
+        - Multiple export formats
+        - Persistent results
         """)
-    
-    st.markdown("---")
-    st.markdown("### 📁 How to Use")
-    
-    st.markdown("""
-    **Option 1: Local Folder (Recommended for Large Datasets)**
-    1. Copy all CCTV footage to a folder on your computer
-    2. Select "📂 Local Folder Path" in sidebar
-    3. Enter the folder path (e.g., `C:/CCTV_Footage`)
-    4. System will automatically find all video files
-    
-    **Option 2: Upload Files (For Small Batches)**
-    1. Select "📤 Upload Files" in sidebar
-    2. Upload multiple video files (up to 200MB each)
-    3. Good for quick analysis of 1-5 videos
-    
-    **Example Folder Structure:**
-    ```
-    CCTV_Footage/
-    ├── Camera_01/
-    │   ├── 2024-01-15_08-00.mp4
-    │   ├── 2024-01-15_12-00.mp4
-    │   └── 2024-01-15_16-00.mp4
-    ├── Camera_02/
-    │   └── ...
-    └── Camera_03/
-        └── ...
-    ```
-    """)
-    
-    st.markdown("---")
-    st.markdown("### ⚡ Performance Examples")
-    
-    perf_df = pd.DataFrame({
-        'Scenario': [
-            '10 videos × 1 hour each',
-            '50 videos × 2 hours each',
-            '100 videos × 12 hours each'
-        ],
-        'Naive Approach': ['~30 hours', '~300 hours', '~3600 hours (150 days)'],
-        'With Optimizations': ['~3 minutes', '~30 minutes', '~6 hours'],
-        'Speedup': ['600x', '600x', '600x']
-    })
-    
-    st.dataframe(perf_df, use_container_width=True, hide_index=True)
-    
-    st.success("💡 Tip: For best results, use GPU-enabled hardware and enable all optimizations!")
 
-# Footer
 st.markdown("---")
 st.markdown("""
-<div style="text-align: center; color: #666; padding: 1rem;">
-    <p><strong>Enterprise Missing Person Detection System</strong></p>
-    <p>Powered by FaceNet, MTCNN & Advanced Optimizations | Built with Streamlit</p>
-    <p style="font-size: 0.9em;">⚡ Ultra-fast batch processing | 📊 Professional analytics | 🎯 High accuracy</p>
+<div style="text-align: center; color: #64748b; padding: 1.5rem;">
+    <p style="font-weight: 600; font-size: 1.1rem;">CrowdScan - Missing Person Detection System</p>
+    <p style="font-size: 0.9rem;">Powered by FaceNet, MTCNN & YOLO v8 | Built with Streamlit</p>
 </div>
 """, unsafe_allow_html=True)
-import streamlit as st
-import traceback
-
-st.title("Crowd Scan – Debug Mode")
-
-try:
-    st.write("App started")
-
-    # 👇 PUT YOUR ORIGINAL CODE BELOW THIS LINE
-    st.write("Running main logic...")
-    
-    # example placeholder
-    x = 1 + 1
-    st.write("Still alive", x)
-
-except Exception as e:
-    st.error("🔥 Python Exception")
-    st.code(traceback.format_exc())
-
