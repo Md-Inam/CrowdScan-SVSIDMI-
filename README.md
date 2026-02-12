@@ -162,7 +162,7 @@ graph LR
 
 ```bash
 # 1. Clone repository
-git clone https://github.com/yourusername/crowdscan.git
+git clone 
 cd crowdscan
 
 # 2. Install dependencies
@@ -263,35 +263,6 @@ Results include:
 
 ---
 
-## 🚀 Deployment Options
-
-### Streamlit Cloud (Free Tier)
-
-```bash
-# Push to GitHub
-git push origin main
-
-# Deploy at share.streamlit.io
-# One-click deployment
-```
-
-**Limits**: 1GB RAM, no GPU
-
----
-
-### Railway (Production)
-
-```bash
-npm i -g @railway/cli
-railway login
-railway up
-```
-
-**Pricing**: $5/month free credit, GPU available
-**Best for**: Production deployments
-
----
-
 ### Docker (Self-Hosted)
 
 ```yaml
@@ -315,21 +286,6 @@ docker-compose up -d
 
 ---
 
-### AWS EC2 (Enterprise)
-
-**Recommended**: `g4dn.xlarge` (GPU) or `c5.2xlarge` (CPU)
-
-```bash
-# Install and run
-sudo apt update && apt install -y python3-pip
-git clone https://github.com/yourusername/crowdscan.git
-cd crowdscan && pip install -r requirements.txt
-streamlit run app.py --server.port=8501 --server.address=0.0.0.0
-```
-
-**Cost**: ~$150-400/month
-
----
 
 ## 📊 Performance
 
@@ -412,28 +368,6 @@ result = process_single_video(
 
 ---
 
-## 🤝 Contributing
-
-We welcome contributions! Here's how:
-
-```bash
-# Fork and clone
-git clone https://github.com/YOUR_USERNAME/crowdscan.git
-
-# Create branch
-git checkout -b feature/amazing-feature
-
-# Make changes and test
-streamlit run app.py
-
-# Commit and push
-git add .
-git commit -m "Add amazing feature"
-git push origin feature/amazing-feature
-
-# Open Pull Request
-```
-
 **Guidelines:**
 - Follow PEP 8
 - Add type hints
@@ -513,23 +447,6 @@ This system processes biometric data. Organizations must:
 
 ---
 
-## 🗺️ Roadmap
-
-### Version 2.0 (Q2 2024)
-- [ ] Real-time RTSP stream support
-- [ ] Multi-person tracking
-- [ ] Advanced analytics dashboard
-- [ ] RESTful API
-- [ ] Mobile app (iOS/Android)
-
-### Version 3.0 (Q4 2024)
-- [ ] Cloud storage integration (AWS S3, GCP, Azure)
-- [ ] Facial aging compensation
-- [ ] Alert system (Email/SMS)
-- [ ] Database integration
-- [ ] Multi-modal recognition
-
----
 
 
 <div align="center">
