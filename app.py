@@ -68,7 +68,7 @@ class Detection:
 # PAGE CONFIGURATION
 # ============================================================================
 st.set_page_config(
-    page_title="CrowdScan - Missing Person Detection",
+    page_title="Crowd Scan: Smart Vision System for Identifying and Detecting Missing Individuals",
     page_icon="🔍",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -147,7 +147,7 @@ st.markdown("""
 # ============================================================================
 st.markdown("""
 <div class="main-header">
-    <h1>🔍 CrowdScan: Missing Person Detection</h1>
+    <h1>🔍 Crowd Scan: Smart Vision System for Identifying and Detecting Missing Individuals</h1>
     <p style="color: white; margin: 0.5rem 0 0 0; font-size: 1.2rem;">AI-Powered Video Analysis with Actionable Intelligence</p>
 </div>
 """, unsafe_allow_html=True)
@@ -704,7 +704,7 @@ if st.session_state.processing_complete and st.session_state.detections:
         <p><strong>Videos Processed:</strong> {st.session_state.processing_stats.get('total_videos', 0)}</p>
         <p><strong>Processing Time:</strong> {st.session_state.processing_stats.get('time_display', 'N/A')}</p>
         <p style="margin-top: 1rem; font-size: 0.9rem; color: #0c4a6e;">
-            📥 Download reports below • Results stay visible after download
+            📥 Download reports below •
         </p>
     </div>
     """, unsafe_allow_html=True)
@@ -1022,7 +1022,7 @@ else:
 st.markdown("---")
 st.markdown("""
 <div style="text-align: center; color: #64748b; padding: 1.5rem;">
-    <p style="font-weight: 600; font-size: 1.1rem;">CrowdScan - Missing Person Detection System</p>
+    <p style="font-weight: 600; font-size: 1.1rem;">Crowd Scan: Smart Vision System for Identifying and Detecting Missing Individuals System</p>
     <p style="font-size: 0.9rem;">Powered by FaceNet, MTCNN & YOLO v8 | Built with Streamlit</p>
 </div>
 """, unsafe_allow_html=True)
